@@ -90,7 +90,3 @@ Optional modules, gated behind flags so the base install stays light:
 - Voice picking is gender-heuristic, not true voice matching (see `--clone-voice` for the real thing)
 - Long silences/music-only stretches rely on Whisper's built-in VAD, nothing custom
 - Segment-by-segment translation can lose some cross-sentence context; a document-level pass would improve coherence
-
-## License
-
-MIT
