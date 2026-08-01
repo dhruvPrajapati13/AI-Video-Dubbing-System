@@ -1,108 +1,96 @@
 # Automated Video Dubbing System
 
-Takes a YouTube URL in any language, downloads it, and produces a new video
-dubbed into English — same video, new audio.
+Take any YouTube video — in German, French, Hindi, or dozens of other languages — and get back a fully dubbed English version. Same video, same pacing, new voice.
+
+Built for the IdeaLabs Digital internship assignment.
+
+## Features
+
+- 🌍 **Any source language** — auto-detects the spoken language, no manual config needed
+- 🎯 **Timing-aware dubbing** — English audio is paced to match the original speech, not just slapped on
+- 🗣️ **Natural voices** — free neural TTS (edge-tts), not robotic text-to-speech
+- 🎬 **Lossless video** — original video quality is untouched; only the audio track changes
+- 👥 **Multi-speaker support** *(optional)* — speaker diarization + per-speaker voices
+- 🎙️ **Voice cloning** *(optional)* — clone each speaker's actual voice with XTTS
 
 ## Setup
 
 ```bash
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-# ffmpeg must also be on your PATH (brew install ffmpeg / apt install ffmpeg)
 ```
 
-GPU (CUDA) is optional but strongly recommended for the 2-hour video —
-Whisper transcription and NLLB translation are both much faster on GPU.
-On CPU, `--whisper-model small` will be far more practical than `medium`
-for long videos.
+You'll also need **ffmpeg** on your PATH:
+```bash
+brew install ffmpeg        # macOS
+sudo apt install ffmpeg    # Ubuntu/Debian
+```
+
+> **GPU recommended.** Whisper transcription and NLLB translation are both much faster with CUDA. On CPU-only machines, use `--whisper-model small` — `medium` will be slow on longer videos.
 
 ## Usage
 
 ```bash
 python main.py "https://www.youtube.com/watch?v=XXXXXXXX"
-
-# Faster/cheaper model for long videos on CPU
-python main.py "URL" --whisper-model small
-
-# Stretch goals
-python main.py "URL" --diarize --hf-token hf_xxx   # multi-speaker detection
-python main.py "URL" --diarize --clone-voice --hf-token hf_xxx  # + voice cloning
 ```
 
-Output lands in `output/run_<timestamp>/`:
-- `dubbed_final.mp4` — the finished video
-- `transcript_en.txt` — timestamped English transcript (handy for the walkthrough)
-- intermediate files (source video/audio, per-segment TTS clips) kept for debugging
+**Common options:**
 
-## Pipeline architecture
+| Flag | What it does |
+|---|---|
+| `--whisper-model small` | Faster transcription, small accuracy trade-off (recommended on CPU) |
+| `--beam-size 1` | Greedy decoding — fastest option, default |
+| `--diarize --hf-token hf_xxx` | Detect multiple speakers, dub each with a distinct voice |
+| `--clone-voice --diarize --hf-token hf_xxx` | Clone each speaker's actual voice instead of a stock one |
+
+**Output** lands in `output/run_<timestamp>/`:
+- `dubbed_final.mp4` — the finished video
+- `transcript_en.txt` — timestamped English transcript
+- intermediate files (source audio, per-segment TTS clips) for debugging
+
+## How it works
 
 ```
 YouTube URL
-    |
-    v
-[downloader.py]   yt-dlp fetches the video; ffmpeg extracts a 16kHz mono WAV
-    |
-    v
-[transcriber.py]  faster-whisper transcribes speech -> timestamped segments
-    |              (source language, VAD-filtered to skip silence)
-    v
-[translator.py]   NLLB-200 translates each segment's text into English,
-    |              batched for throughput
-    v
-[synthesizer.py]  edge-tts renders each English segment as speech, at a rate
-    |              estimated to fit the original segment's duration, with a
-    |              small corrective ffmpeg atempo pass if still off; segments
-    |              are overlaid onto one silent track at their original
-    |              timestamps
-    v
-[remixer.py]      ffmpeg muxes the new audio onto the original video,
-                   copying (not re-encoding) the video stream
+    │
+    ▼
+downloader.py    yt-dlp fetches the video; ffmpeg extracts a 16kHz mono WAV
+    │
+    ▼
+transcriber.py   faster-whisper → timestamped segments in the source language
+    │
+    ▼
+translator.py    NLLB-200 translates each segment into English
+    │
+    ▼
+synthesizer.py   edge-tts renders English speech, rate-matched to fit each
+    │             segment's original duration
+    ▼
+remixer.py       ffmpeg swaps in the new audio; video stream is copied,
+                  never re-encoded
 ```
 
-Optional stretch modules:
-- `diarizer.py` — pyannote.audio speaker diarization, tags each segment with
-  a speaker label so multiple speakers can get distinct voices.
-- `voice_cloner.py` — Coqui XTTS clones each speaker's own voice from a
-  short reference clip of their original audio, instead of using a stock
-  edge-tts voice.
+Optional modules, gated behind flags so the base install stays light:
+- **`diarizer.py`** — pyannote.audio speaker diarization
+- **`voice_cloner.py`** — Coqui XTTS voice cloning
 
-## Key design decisions
+## Design decisions
 
-- **yt-dlp over pytube**: pytube breaks constantly as YouTube changes its
-  internals; yt-dlp is actively maintained and far more reliable.
-- **faster-whisper over openai-whisper**: same model weights, several times
-  faster and lower memory via CTranslate2 — meaningful on a 2-hour video.
-- **NLLB-200 over a literal MT API**: one open-source model covers ~200
-  languages including German/French/Hindi, translates for meaning (not
-  word-for-word), and runs fully offline once downloaded — no per-request
-  cost or rate limits on a 2-hour video's worth of segments. IndicTrans2
-  (per the assignment hint) is left as a documented drop-in for
-  Indian-language-only workloads, where it outperforms a general model.
-- **Segment-level timing over word-level**: translating and synthesizing per
-  Whisper segment (rather than per word) keeps sentences grammatical while
-  still anchoring each chunk to its original timestamp — a practical middle
-  ground between full transcript-level dubbing (loses sync) and word-level
-  dubbing (breaks grammar).
-- **Rate-adjusted TTS + corrective atempo, not just time-stretching**: edge-tts's
-  own `rate` parameter is asked to speak faster/slower first, so the voice
-  stays natural; only a small residual mismatch gets fixed with ffmpeg's
-  `atempo` filter, to avoid the "chipmunk" artifacts of large pitch-preserving
-  stretches.
-- **Video stream copied, not re-encoded**: `-c:v copy` in the final mux keeps
-  the original video quality intact and makes remuxing the fast part of the
-  pipeline, even on a 2-hour file.
-- **"Same voice, same energy" as a heuristic, not a hard guarantee**: the
-  core assignment picks a fitting stock voice by (rough) gender; true voice
-  matching is the `--clone-voice` stretch goal via XTTS, which clones the
-  actual speaker's timbre from the source audio.
+| Choice | Why |
+|---|---|
+| yt-dlp over pytube | pytube breaks constantly as YouTube changes internals; yt-dlp is actively maintained |
+| faster-whisper over openai-whisper | Same weights, several times faster via CTranslate2 — matters on long videos |
+| NLLB-200 over a single-language MT tool | Needed to handle *any* source language, not just Hindi/German/French; translates for meaning, not word-for-word |
+| Segment-level timing, not word-level | Keeps sentences grammatical while still anchored to original timestamps |
+| Rate-adjusted TTS + capped corrective stretch | Avoids the "chipmunk"/"drugged" artifacts of forcing exact duration matches |
+| `-c:v copy` on remux | No quality loss, and remuxing stays fast even on a 2-hour file |
 
-## Known limitations / what I'd improve next
+## Known limitations
 
-- Gender/energy detection for stock-voice picking is currently a stub
-  (`pick_voice` defaults to one voice); a real implementation would run
-  pitch analysis (e.g. via librosa) per speaker segment to choose better.
-- Very long silences or music-only stretches aren't specially handled beyond
-  Whisper's VAD filtering.
-- NLLB translation quality dips on very short, context-free segments (a
-  known limitation of segment-by-segment MT); a document-level translation
-  pass with segment realignment would improve coherence for a v2.
+- Voice picking is gender-heuristic, not true voice matching (see `--clone-voice` for the real thing)
+- Long silences/music-only stretches rely on Whisper's built-in VAD, nothing custom
+- Segment-by-segment translation can lose some cross-sentence context; a document-level pass would improve coherence
+
+## License
+
+MIT
