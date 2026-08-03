@@ -2,7 +2,6 @@
 
 Take any YouTube video — in German, French, Hindi, or dozens of other languages — and get back a fully dubbed English version. Same video, same pacing, new voice.
 
-Built for the IdeaLabs Digital internship assignment.
 
 ## Features
 
