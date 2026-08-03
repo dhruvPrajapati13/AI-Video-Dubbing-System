@@ -1,4 +1,4 @@
-# Automated Video Dubbing System
+# AI Powered Video Dubbing System
 
 Take any YouTube video — in German, French, Hindi, or dozens of other languages — and get back a fully dubbed English version. Same video, same pacing, new voice.
 
